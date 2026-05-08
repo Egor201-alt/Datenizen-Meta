@@ -1,0 +1,14 @@
+site_name: Datenizen Meta
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: blue
+  features:
+    - navigation.tabs
+    - content.code.copy
+
+nav:
+  - Introduction: index.md
+  - Transactions: transactions.md
+  - Export & Import: export-import.md
