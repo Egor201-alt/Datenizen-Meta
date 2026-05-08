@@ -3,12 +3,23 @@ theme:
   name: material
   palette:
     scheme: slate
-    primary: blue
+    primary: black
+    accent: blue
   features:
     - navigation.tabs
+    - navigation.sections
+    - toc.integrate
     - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.superfences
 
 nav:
-  - Introduction: index.md
-  - Transactions: transactions.md
-  - Export & Import: export-import.md
+  - Documentation: index.md
