@@ -16,7 +16,7 @@ Datenizen is a high-performance database management addon for Denizen, designed 
 *   **Error Intelligence:** The `db error` event exposes SQL state codes and human-readable categories for precise error handling.
 
 ### Basic Connection Setup
-Database connections are established using the `db_connect` command. Connections are persisted under a unique `id` for subsequent use. The `driver` argument accepts short aliases — no need to type full class names.
+Database connections are established using the `db_connect` command. Connections are persisted under a unique `id` for subsequent use. The `driver` argument accepts short aliases - no need to type full class names.
 
 | Alias | Database |
 |---|---|
@@ -25,7 +25,7 @@ Database connections are established using the `db_connect` command. Connections
 | `mariadb` | MariaDB |
 | `postgresql` or `postgres` | PostgreSQL |
 
-The `url` argument also supports a short form — no `jdbc:` prefix required.
+The `url` argument also supports a short form - no `jdbc:` prefix required.
 
 ```yaml
 # Connect to SQLite using a short path
@@ -158,7 +158,7 @@ on db connection leaked:
 
 ## Upsert (Insert or Update)
 
-`db_upsert` is the most common data-persistence pattern in game servers — save a player record regardless of whether it already exists. The correct SQL is built automatically for each database type:
+`db_upsert` is the most common data-persistence pattern in game servers - save a player record regardless of whether it already exists. The correct SQL is built automatically for each database type:
 
 | Database | Strategy |
 |---|---|
@@ -228,7 +228,7 @@ on db csv imported:
 ```yaml
 - db_table_create id:main table:players columns:<list[id INTEGER PRIMARY KEY AUTOINCREMENT|name TEXT NOT NULL|uuid TEXT UNIQUE|coins INTEGER DEFAULT 0]>
 
-# Safe to call on startup — uses IF NOT EXISTS by default
+# Safe to call on startup - uses IF NOT EXISTS by default
 # Pass if_not_exists:false to require the table to not exist
 - db_table_create id:main table:logs columns:<list[id INTEGER PRIMARY KEY|message TEXT|ts INTEGER]> if_not_exists:false
 ```
@@ -383,7 +383,7 @@ on db error id:main:
 - if <db_connected[main]>:
   - narrate "Pool is open."
 
-# Actively test the connection (more reliable — calls isValid(1) on a real connection)
+# Actively test the connection (more reliable - calls isValid(1) on a real connection)
 - if !<db_ping[main]>:
   - db_reconnect id:main
 
@@ -466,7 +466,7 @@ on db error id:main:
 
 ## Retrieving Last Inserted ID
 
-To guarantee thread safety, `db_last_id` **must** be called with a transaction ID — this ensures it reads from the same connection the insert was made on.
+To guarantee thread safety, `db_last_id` **must** be called with a transaction ID - this ensures it reads from the same connection the insert was made on.
 
 ```yaml
 - db_transaction id:main action:start tx:insert_tx
@@ -490,7 +490,7 @@ To guarantee thread safety, `db_last_id` **must** be called with a transaction I
 
 ## Parameterized Queries
 
-All commands that accept SQL support `?` placeholders via the `args` list. This is the recommended approach — never interpolate player input directly into SQL strings.
+All commands that accept SQL support `?` placeholders via the `args` list. This is the recommended approach - never interpolate player input directly into SQL strings.
 
 ```yaml
 # With args list
