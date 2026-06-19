@@ -16,7 +16,10 @@ Datenizen is a high-performance database addon for [Denizen](https://github.com/
 - **Transactions + savepoints** — full ACID-compliant multi-statement operations
 - **Named queries** — register SQL once, run by name anywhere in your scripts
 - **Schema migrations** — version-controlled SQL file migration runner
-- **Query caching** — TTL-based in-memory result cache
+- **Query caching** — TTL-based in-memory result cache with manual invalidation
+- **Schema alterations** — add/drop columns, rename tables, create/drop indexes without writing SQL
+- **Conditional execution** — run SQL only when a check query matches
+- **PostgreSQL LISTEN/NOTIFY** — real-time push notifications between database and scripts
 - **Smart error events** — SQL state codes, human-readable categories, per-db and per-category switches
 
 ### Supported Databases
@@ -178,7 +181,7 @@ Tags run on the calling thread. Use them when you need the result immediately in
 
 ### Async Query
 
-When you don't need the result immediately, run it asynchronously and handle it in an event. This is the correct approach for queries triggered mid-script that don't block anything.
+Run a SELECT asynchronously and handle results in an event — correct for queries triggered mid-script that don't need to block.
 
 ```yaml
 - db_query_async id:main sql:"SELECT * FROM players WHERE rank = ?" args:<list[gold]> label:gold_players
@@ -186,6 +189,14 @@ When you don't need the result immediately, run it asynchronously and handle it 
 on db queried label:gold_players:
   - foreach <context.rows> as:row:
     - narrate "<[row].get[name]> is gold rank"
+```
+
+When you need the result immediately in the same script, use `define` — the queue pauses until data arrives then continues:
+
+```yaml
+- db_query_async id:main sql:"SELECT * FROM players ORDER BY coins DESC" define:players
+- narrate "Top player: <[players].first.get[name]>"
+- narrate "Total loaded: <[players].size>"
 ```
 
 ### Cached Query
@@ -300,6 +311,44 @@ Must be called within a transaction to guarantee the same connection is used.
 
 ---
 
+## Conditional Execution
+
+Run a write query only when a check SELECT returns at least one row. If the check matches nothing, fires `db executed` with `affected_rows=0` (skipped — no error).
+
+```yaml
+# Only update if player exists
+- db_execute_if id:main check:"SELECT 1 FROM players WHERE uuid=?" check_args:<list[<player.uuid>]> sql:"UPDATE players SET online=1 WHERE uuid=?" args:<list[<player.uuid>]> label:mark_online
+
+on db executed label:mark_online:
+  - if <context.affected_rows> > 0:
+    - narrate "Marked online"
+  - else:
+    - narrate "Player not in database, skipped"
+```
+
+---
+
+## PostgreSQL LISTEN/NOTIFY
+
+Subscribe to a PostgreSQL notification channel. When another connection executes `NOTIFY channel, 'payload'`, Datenizen fires `on db notify` with the channel name and payload. Notifications are polled every second (20 ticks).
+
+```yaml
+# Start listening on server start
+on db connected id:pg:
+  - db_listen id:pg channel:player_events action:start
+
+# Handle incoming notifications
+on db notify channel:player_events:
+  - narrate "DB notification from <context.id>: <context.payload>"
+
+# Stop listening
+- db_listen id:pg channel:player_events action:stop
+```
+
+Requires PostgreSQL. Fires `on db error` if the database type is not `postgresql`.
+
+---
+
 ## Schema Management
 
 ### Creating Tables
@@ -318,6 +367,35 @@ Fires `on db executed` with `label:db_table_create`.
 
 ```yaml
 - db_drop_table id:main table:old_data
+```
+
+### Altering Tables
+
+```yaml
+# Add a column (full SQL definition)
+- db_add_column id:main table:players column:"rank TEXT DEFAULT 'default'"
+- db_add_column id:main table:players column:"last_seen INTEGER"
+
+# Drop a column (SQLite 3.35.0+ required)
+- db_drop_column id:main table:players column:old_field
+
+# Rename a table
+- db_rename_table id:main from:players to:players_old
+```
+
+### Indexes
+
+```yaml
+# Create a unique index (speeds up lookups by uuid)
+- db_create_index id:main table:players name:idx_players_uuid column:uuid unique:true
+
+# Create a non-unique index
+- db_create_index id:main table:logs name:idx_logs_ts column:timestamp
+
+# Drop an index
+- db_drop_index id:main name:idx_players_uuid
+# MySQL/MariaDB require the table name
+- db_drop_index id:mysql_db name:idx_players_uuid table:players
 ```
 
 ### Copying Tables
@@ -410,6 +488,17 @@ One parameterized query executed many times with different args — the most eff
 
 ## Data Import and Export
 
+### JSON Export
+
+```yaml
+- db_export_json id:main sql:"SELECT * FROM players ORDER BY coins DESC" path:plugins/Datenizen/exports/players.json
+
+on db json exported:
+  - narrate "JSON saved to <context.path>"
+```
+
+Null database values are written as JSON `null` (not the string `"null"`).
+
 ### CSV Export
 
 ```yaml
@@ -459,6 +548,9 @@ on db backed up:
 
 # Change connection timeout (minimum 250ms)
 - db_timeout id:main ms:5000
+
+# Manually invalidate the query cache for a connection
+- db_clear_cache id:main
 ```
 
 ### Pool Statistics
@@ -551,6 +643,15 @@ on db error category:connection:
 | `db_backup` | Copy an SQLite database file asynchronously |
 | `db_import_csv` | Import a CSV file into a table |
 | `db_export_csv` | Export a query result to a CSV file |
+| `db_add_column` | Add a column to a table |
+| `db_drop_column` | Drop a column from a table (SQLite 3.35.0+ required) |
+| `db_rename_table` | Rename a table |
+| `db_create_index` | Create an index on a table column |
+| `db_drop_index` | Drop an index |
+| `db_execute_if` | Run a write query only when a check SELECT returns rows |
+| `db_export_json` | Export a query result to a JSON file |
+| `db_listen` | Subscribe to or unsubscribe from a PostgreSQL NOTIFY channel |
+| `db_clear_cache` | Manually invalidate the query cache for a connection |
 | `db_analyze` | Run VACUUM (SQLite) or ANALYZE (others) |
 | `db_clean_pool` | Evict idle connections from a pool |
 | `db_set_pool_size` | Change maximum pool size (1–100) |
@@ -571,6 +672,8 @@ on db error category:connection:
 | `on db backed up` | `id` | `id`, `path` | SQLite backup completed |
 | `on db csv exported` | — | `id`, `path` | CSV export completed |
 | `on db csv imported` | — | `id`, `table`, `rows` | CSV import completed |
+| `on db json exported` | — | `id`, `path` | JSON export completed |
+| `on db notify` | `channel` | `id`, `channel`, `payload` | PostgreSQL NOTIFY received on a subscribed channel |
 | `on db transaction expired` | — | `tx`, `id` | Transaction auto-rolled back after 5 minutes |
 | `on db connection leaked` | — | `tx`, `duration` | Transaction exceeded the 5-minute threshold |
 
