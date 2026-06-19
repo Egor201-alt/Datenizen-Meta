@@ -1,22 +1,25 @@
 # Datenizen Documentation
 
-Datenizen is a high-performance database management addon for Denizen, designed to provide a robust bridge between script-based logic and external database engines (SQLite, MySQL, MariaDB, PostgreSQL). It leverages HikariCP for efficient connection pooling, ensures thread safety by executing heavy database operations asynchronously, and provides a comprehensive suite of events and tags for seamless data manipulation.
+Datenizen is a high-performance database addon for [Denizen](https://github.com/DenizenScript/Denizen), bridging script logic with SQLite, MySQL, MariaDB, and PostgreSQL via HikariCP connection pooling. All heavy I/O runs asynchronously; results return through events and tags.
 
 ---
 
 ## Introduction
 
 ### Key Features
-*   **Async-First Architecture:** All read/write operations execute asynchronously by default to prevent server-side lag.
-*   **Connection Pooling:** Built-in integration with HikariCP for resource optimization.
-*   **Event-Driven:** Reactive programming support via specialized database events (e.g., `db executed`, `db error`).
-*   **Safe Data Handling:** Automatic support for `PreparedStatement` to mitigate SQL injection risks.
-*   **Abstraction Layer:** Simplified commands for CRUD operations (`insert`, `update`, `upsert`, `delete`) and batch processing.
-*   **Transaction Management:** Full support for ACID-compliant multi-statement transactions.
-*   **Error Intelligence:** The `db error` event exposes SQL state codes and human-readable categories for precise error handling.
 
-### Basic Connection Setup
-Database connections are established using the `db_connect` command. Connections are persisted under a unique `id` for subsequent use. The `driver` argument accepts short aliases - no need to type full class names.
+- **Async-first** — all DB I/O runs off the main thread; results fire events back on it
+- **HikariCP pooling** — one managed pool per named connection ID
+- **Event-driven** — every operation fires a success or error event for reactive scripting
+- **PreparedStatements everywhere** — no SQL injection possible through Datenizen's own commands
+- **Full CRUD abstraction** — insert, update, upsert, delete, batch upsert without writing SQL
+- **Transactions + savepoints** — full ACID-compliant multi-statement operations
+- **Named queries** — register SQL once, run by name anywhere in your scripts
+- **Schema migrations** — version-controlled SQL file migration runner
+- **Query caching** — TTL-based in-memory result cache
+- **Smart error events** — SQL state codes, human-readable categories, per-db and per-category switches
+
+### Supported Databases
 
 | Alias | Database |
 |---|---|
@@ -25,140 +28,90 @@ Database connections are established using the `db_connect` command. Connections
 | `mariadb` | MariaDB |
 | `postgresql` or `postgres` | PostgreSQL |
 
-The `url` argument also supports a short form - no `jdbc:` prefix required.
+---
+
+## Getting Started
+
+### Connecting
 
 ```yaml
-# Connect to SQLite using a short path
+# SQLite (short path, no jdbc: prefix needed)
 - db_connect id:local driver:sqlite url:plugins/Datenizen/local.db
 
-# Connect to MySQL with short url
+# MySQL
 - db_connect id:main driver:mysql url:localhost:3306/mydb user:root pass:secret
 
-# Connect to PostgreSQL
+# PostgreSQL
 - db_connect id:pg driver:postgres url:localhost:5432/mydb user:admin pass:secret
 
-# Full JDBC URLs still work too
+# Full JDBC URL also works
 - db_connect id:legacy driver:sqlite url:jdbc:sqlite:plugins/Datenizen/local.db
 ```
 
-Fires `on db connected` on success, or `on db error` on failure.
+Fires `on db connected` on success, `on db error` on failure.
 
-### Reconnecting
-If a connection pool becomes stale (e.g. the remote database server restarted), reconnect without repeating credentials:
+### Connecting from a File
+
+Store credentials in a YAML file so they are not hardcoded in scripts:
+
+```yaml title="plugins/Datenizen/db.yml"
+driver: mysql
+url: localhost:3306/mydb
+user: root
+password: secret
+```
 
 ```yaml
+- db_connect_file id:main path:plugins/Datenizen/db.yml
+```
+
+Fires `on db connected` on success, `on db error` on failure.
+
+### Checking Status and Reconnecting
+
+```yaml
+# Fast in-memory check (pool is registered and open)
+- if <db_connected[main]>:
+  - narrate "Pool is open."
+
+# Active connection test — calls isValid(1) on a real connection
 - if !<db_ping[main]>:
   - db_reconnect id:main
+
+# All currently active IDs
+- narrate "Active connections: <db_list>"
 ```
 
-`db_reconnect` reuses the exact HikariCP config from the original `db_connect` call. Fires `on db connected` on success.
+`db_reconnect` reuses credentials from the original `db_connect` call. Fires `on db connected` on success.
 
-### Basic Data Manipulation
+---
+
+## Writing Data
+
+### Insert
 
 ```yaml
-# Insert a row without writing SQL
-- db_table_insert id:main table:players columns:<list[name|uuid|score]> values:<list[Steve|abc-123|0]> label:new_player
+- db_table_insert id:main table:players columns:<list[name|uuid|coins]> values:<list[Steve|abc-123|0]> label:new_player
 
-# Update with conditions
-- db_table_update id:main table:players set:<list[score=100]> where:<list[uuid=abc-123]> label:update_score
-
-# Insert or update in one command (upsert)
-- db_upsert id:main table:players key_column:uuid key_value:<player.uuid> set:<list[name=<player.name>|coins=0]> label:save_player
-
-# React to completion
 on db executed label:new_player:
-  - narrate "Player inserted. Rows affected: <context.affected_rows>"
+  - narrate "Inserted <context.affected_rows> row(s)"
 ```
 
-### Retrieving Data
+### Update
 
 ```yaml
-# Single value
-- define score <db_value[main].sql[SELECT score FROM players WHERE uuid = ?].args[<list[abc-123]>]>
-
-# First row as a MapTag (cleaner than db_query when you only need one row)
-- define player <db_query_first[main].sql[SELECT * FROM players WHERE uuid = ?].args[<player.uuid>]>
-- narrate "Coins: <[player].get[coins]>"
-
-# All rows as a ListTag of MapTags
-- define players <db_query[main].sql[SELECT * FROM players]>
-
-# Result as JSON string
-- define json_data <db_query_as_json[main].sql[SELECT * FROM players]>
+- db_table_update id:main table:players set:<list[coins=100|rank=gold]> where:<list[uuid=abc-123]> label:update_player
 ```
 
-### Connection Management
+### Delete
 
 ```yaml
-# Disconnect and release pool resources
-- db_disconnect id:main
-
-# Evict idle connections from a specific pool
-- db_clean_pool id:main
-
-# Modify pool size dynamically (1–100)
-- db_set_pool_size id:main size:20
-
-# Set connection timeout (minimum 250ms)
-- db_timeout id:main ms:5000
+- db_table_delete id:main table:players where:<list[uuid=abc-123]> label:remove_player
 ```
 
----
+### Upsert (Insert or Update)
 
-## Transaction Management
-
-Transactions allow multiple SQL statements to be grouped into a single atomic operation, ensuring data integrity. If any statement within a transaction fails, the entire sequence can be rolled back.
-
-### Syntax
-```yaml
-- db_transaction id:<id> action:<start|commit|rollback> tx:<tx_id>
-```
-
-### Usage
-
-```yaml
-- db_transaction id:main action:start tx:my_tx
-
-- db_execute id:main "sql:UPDATE players SET score = score + 10 WHERE id = 1" tx:my_tx
-- db_execute id:main "sql:INSERT INTO logs (action) VALUES ('score_update')" tx:my_tx
-
-- db_transaction id:main action:commit tx:my_tx
-```
-
-### Rollback on Failure
-Use the `category` switch on `db error` to target specific failure types:
-
-```yaml
-on db error id:main category:constraint:
-  - db_transaction id:main action:rollback tx:my_tx
-  - narrate "Constraint violation, transaction rolled back."
-
-on db error id:main:
-  - narrate "Error (<context.sql_state>): <context.error>"
-  - narrate "Query: <context.query>"
-```
-
-### Transaction Expiration
-If a transaction remains open for more than 5 minutes, it is automatically rolled back.
-
-```yaml
-on db transaction expired:
-  - debug log "Transaction <context.tx> on <context.id> timed out and was rolled back."
-```
-
-### Connection Leak Detection
-Fires alongside `db transaction expired` when a transaction exceeds the 5-minute threshold.
-
-```yaml
-on db connection leaked:
-  - narrate "Leak detected: tx <context.tx> was open for <context.duration> seconds."
-```
-
----
-
-## Upsert (Insert or Update)
-
-`db_upsert` is the most common data-persistence pattern in game servers - save a player record regardless of whether it already exists. The correct SQL is built automatically for each database type:
+The most common game-server pattern — save a record whether it exists or not. The correct SQL is generated per database type automatically.
 
 | Database | Strategy |
 |---|---|
@@ -169,71 +122,197 @@ on db connection leaked:
 The `key_column` must have a `UNIQUE` or `PRIMARY KEY` constraint.
 
 ```yaml
-- db_upsert id:main table:players key_column:uuid key_value:<player.uuid> set:<list[name=<player.name>|coins=100|rank=gold]> label:save_player
-```
+- db_upsert id:main table:players key_column:uuid key_value:<player.uuid> set:<list[name=<player.name>|coins=100]> label:save_player
 
-```yaml
 on db executed label:save_player:
-  - narrate "Player data saved. Rows affected: <context.affected_rows>"
+  - narrate "Saved. Rows affected: <context.affected_rows>"
+```
+
+### Batch Upsert
+
+Upsert many rows in one batched statement — far more efficient than looping `db_upsert`.
+Each entry in `rows` is a `MapTag`.
+
+```yaml
+- define rows <list[<map[uuid=abc|name=Steve|coins=100]>|<map[uuid=def|name=Alex|coins=200]>]>
+- db_upsert_batch id:main table:players key_column:uuid rows:<[rows]> label:bulk_save
+
+on db executed label:bulk_save:
+  - narrate "Batch saved. Total rows affected: <context.affected_rows>"
 ```
 
 ---
 
-## Data Export and Import
+## Reading Data
 
-### Exporting Data
+### Tags (synchronous)
+
+Tags run on the calling thread. Use them when you need the result immediately in the same script step.
 
 ```yaml
-- db_export_csv id:<id> sql:<query> path:<path> (args:<list>)
+# Single scalar value
+- define score <db_value[main].sql[SELECT score FROM players WHERE uuid = ?].args[<list[abc-123]>]>
+
+# First row as a MapTag
+- define player <db_query_first[main].sql[SELECT * FROM players WHERE uuid = ?].args[<player.uuid>]>
+- narrate "Coins: <[player].get[coins]>"
+
+# All rows as a ListTag of MapTags
+- foreach <db_query[main].sql[SELECT * FROM players WHERE active = ?].args[<list[1]>]> as:row:
+  - narrate "<[row].get[name]>: <[row].get[coins]> coins"
+
+# Result as a JSON string
+- define json <db_query_as_json[main].sql[SELECT * FROM players]>
+
+# Paginated query (page 1, 20 rows per page)
+- define page <db_query_page[main].sql[SELECT * FROM players ORDER BY coins DESC].page[1].size[20]>
+
+# Map of key -> value from a two-column query
+- define settings <db_convert_map[main].sql[SELECT key, value FROM config]>
+- narrate "Language: <[settings].get[language]>"
+
+# Check if any row matches
+- if <db_exists[main].sql[SELECT 1 FROM players WHERE uuid = ?].args[<player.uuid>]>:
+  - narrate "Player exists"
 ```
 
-```yaml
-# Export all players
-- db_export_csv id:main sql:"SELECT * FROM players" path:plugins/Datenizen/exports/players.csv
+### Async Query
 
-# Export with filter
-- db_export_csv id:main sql:"SELECT * FROM players WHERE rank = ?" path:plugins/Datenizen/exports/gold.csv args:<list[gold]>
+When you don't need the result immediately, run it asynchronously and handle it in an event. This is the correct approach for queries triggered mid-script that don't block anything.
+
+```yaml
+- db_query_async id:main sql:"SELECT * FROM players WHERE rank = ?" args:<list[gold]> label:gold_players
+
+on db queried label:gold_players:
+  - foreach <context.rows> as:row:
+    - narrate "<[row].get[name]> is gold rank"
 ```
 
-Values containing commas, quotes, or newlines are automatically escaped per RFC 4180.
+### Cached Query
 
-### Importing Data
-
-```yaml
-- db_import_csv id:<id> table:<table> path:<path>
-```
+Avoid hitting the database repeatedly for the same data. Results are cached for the given TTL (in ticks) and invalidated automatically when the database disconnects.
 
 ```yaml
-- db_import_csv id:main table:players path:plugins/Datenizen/imports/backup.csv
-```
-
-Supports quoted fields containing commas and escaped quotes.
-
-### Events
-
-```yaml
-on db csv exported:
-  - narrate "Export saved to <context.path>"
-
-on db csv imported:
-  - narrate "Imported <context.rows> rows into <context.table>"
+# Cache leaderboard for 5 seconds (100 ticks)
+- define top <db_cached_query[main].sql[SELECT * FROM players ORDER BY coins DESC LIMIT 10].ttl[100]>
 ```
 
 ---
 
-## Database Schema
+## Parameterized Queries
+
+All commands that accept SQL support `?` placeholders bound via the `args` list. Never interpolate player input directly into SQL strings.
+
+```yaml
+- db_execute id:main sql:"INSERT INTO players (name, uuid) VALUES (?, ?)" args:<list[<player.name>|<player.uuid>]>
+
+- db_execute id:main "sql:UPDATE players SET coins = coins - ? WHERE uuid = ?" args:<list[<[amount]>|<player.uuid>]>
+```
+
+---
+
+## Named Queries
+
+Register a SQL query once and call it by name anywhere in your scripts. Reduces duplication and keeps SQL in one place.
+
+```yaml
+# Register on startup
+- db_register id:main name:get_player sql:"SELECT * FROM players WHERE uuid = ?"
+- db_register id:main name:save_player sql:"INSERT INTO players (uuid, name, coins) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name)"
+
+# Call later — SELECT fires 'db queried', DML fires 'db executed'
+- db_run id:main name:get_player args:<list[<player.uuid>]> label:got_player
+- db_run id:main name:save_player args:<list[<player.uuid>|<player.name>|0]> label:saved_player
+
+on db queried label:got_player:
+  - define p <context.rows.first>
+  - narrate "Found: <[p].get[name]> with <[p].get[coins]> coins"
+```
+
+`db_run` detects the query type automatically: starts with `SELECT` → fires `db queried`; otherwise → fires `db executed`.
+
+---
+
+## Transaction Management
+
+Transactions group multiple statements into one atomic unit. If any statement fails, the entire group rolls back.
+
+### Basic Usage
+
+```yaml
+- db_transaction id:main action:start tx:my_tx
+
+- db_execute id:main "sql:UPDATE players SET coins = coins - ? WHERE uuid = ?" args:<list[50|<player.uuid>]> tx:my_tx
+- db_execute id:main "sql:INSERT INTO logs (action, player) VALUES (?, ?)" args:<list[purchase|<player.uuid>]> tx:my_tx
+
+- db_transaction id:main action:commit tx:my_tx
+```
+
+```yaml
+on db error id:main:
+  - db_transaction id:main action:rollback tx:my_tx
+  - narrate "Transaction rolled back: <context.error>"
+```
+
+### Savepoints
+
+Savepoints let you partially roll back within a transaction without discarding the whole thing.
+
+```yaml
+- db_transaction id:main action:start tx:my_tx
+
+- db_execute id:main "sql:UPDATE accounts SET balance = balance - 100 WHERE id = 1" tx:my_tx
+
+- db_transaction tx:my_tx action:savepoint savepoint:before_bonus
+- db_execute id:main "sql:UPDATE accounts SET balance = balance + 200 WHERE id = 2" tx:my_tx
+
+# Undo only the bonus step if it fails, keep the debit
+- db_transaction tx:my_tx action:rollback_to savepoint:before_bonus
+
+- db_transaction id:main action:commit tx:my_tx
+```
+
+Available savepoint actions: `savepoint`, `rollback_to`, `release`.
+
+### Transaction Expiry and Leak Detection
+
+Transactions open for more than 5 minutes are automatically rolled back.
+
+```yaml
+on db transaction expired:
+  - debug log "Transaction <context.tx> on <context.id> timed out."
+
+on db connection leaked:
+  - narrate "Leak detected: tx <context.tx> was open for <context.duration> seconds."
+```
+
+### Last Inserted ID
+
+Must be called within a transaction to guarantee the same connection is used.
+
+```yaml
+- db_transaction id:main action:start tx:insert_tx
+- db_execute id:main "sql:INSERT INTO logs (action) VALUES ('test')" tx:insert_tx
+- define new_id <db_last_id[insert_tx]>
+- db_transaction id:main action:commit tx:insert_tx
+- narrate "New ID: <[new_id]>"
+```
+
+---
+
+## Schema Management
 
 ### Creating Tables
 
 ```yaml
+# Safe to call on startup — uses IF NOT EXISTS by default
 - db_table_create id:main table:players columns:<list[id INTEGER PRIMARY KEY AUTOINCREMENT|name TEXT NOT NULL|uuid TEXT UNIQUE|coins INTEGER DEFAULT 0]>
 
-# Safe to call on startup - uses IF NOT EXISTS by default
-# Pass if_not_exists:false to require the table to not exist
+# Require the table to not exist
 - db_table_create id:main table:logs columns:<list[id INTEGER PRIMARY KEY|message TEXT|ts INTEGER]> if_not_exists:false
 ```
 
-Fires `on db executed` with `label:db_table_create` on success.
+Fires `on db executed` with `label:db_table_create`.
 
 ### Dropping Tables
 
@@ -241,16 +320,25 @@ Fires `on db executed` with `label:db_table_create` on success.
 - db_drop_table id:main table:old_data
 ```
 
-Table name must be alphanumeric/underscores only.
-
-### Table Inspection Tags
+### Copying Tables
 
 ```yaml
-# Check if a table exists (two syntaxes)
-- if <db_exists_table[main].table[players]>:
-- if <db_table_exists[main|players]>:
+# Create a new table from an existing one (copies schema + data)
+- db_table_copy id:main from:players to:players_backup
 
-# List all tables in the database
+# Only copy data into an already-existing table
+- db_table_copy id:main from:players to:players_backup insert_only:true
+```
+
+Fires `on db executed` with `label:db_table_copy`.
+
+### Inspecting Schema
+
+```yaml
+# Check if a table exists
+- if <db_exists_table[main].table[players]>:
+
+# List all tables
 - define all_tables <db_tables[main]>
 
 # Get column names for a table
@@ -262,161 +350,175 @@ Table name must be alphanumeric/underscores only.
 
 ---
 
-## Advanced Query Execution
+## Migrations
 
-### Synchronous Execution
-Executes SQL on the main server thread. Use only for time-critical events like `on shutdown`.
+Run SQL migration files from a folder in alphabetical order. Already-applied migrations are tracked in a `__datenizen_migrations` table and skipped on subsequent runs. Safe to call on every server start.
 
-```yaml
-on shutdown:
-  - db_execute_sync id:main "sql:UPDATE players SET last_online = ? WHERE uuid = ?" args:<list[<util.time_now>|<player.uuid>]>
+```
+plugins/Datenizen/migrations/
+  001_create_players.sql
+  002_add_rank_column.sql
+  003_create_logs.sql
 ```
 
-### Batch Processing
-Executes one parameterized query many times efficiently using JDBC batching inside a transaction. The entire batch is rolled back on failure.
-
 ```yaml
-- define batch_data <list[<list[100|uuid1]>|<list[200|uuid2]>|<list[50|uuid3]>]>
-- db_execute_batch id:main "sql:UPDATE players SET score = ? WHERE uuid = ?" args:<[batch_data]> label:bulk_update
+on db connected id:main:
+  - db_migrate id:main path:plugins/Datenizen/migrations
+
+on db migrated id:main:
+  - narrate "Applied <context.count> migration(s) from <context.path>"
+
+on db error id:main:
+  - debug log "Migration failed: <context.error>"
 ```
 
-### SQL Script Execution
-Reads a `.sql` file, splits by semicolons, and executes all statements inside a transaction with rollback on failure.
+If a migration fails, it is rolled back and no further migrations run that session.
+
+---
+
+## Batch and Bulk Operations
+
+### SQL Script File
+
+Reads a `.sql` file, splits statements correctly (handles quoted strings and comments), and runs them all in a single transaction.
 
 ```yaml
-- db_execute_script id:main path:plugins/Datenizen/sql/init_schema.sql
+- db_execute_script id:main path:plugins/Datenizen/sql/init.sql
 ```
 
-### Asynchronous Sequential Execution
-Executes a list of SQL statements sequentially in one async task, inside a transaction with rollback on failure.
+### Sequential Async List
+
+Executes multiple SQL statements in one async task, inside a transaction.
 
 ```yaml
-- define queries <list["DELETE FROM logs WHERE age > 30"|"UPDATE stats SET count = 0"]>
-- db_execute_async_list id:main sql:<[queries]>
+- db_execute_async_list id:main sql:<list["DELETE FROM logs WHERE age > 30"|"UPDATE stats SET resets = resets + 1"]> label:cleanup
+
+on db executed label:cleanup:
+  - narrate "Cleanup done"
 ```
+
+### JDBC Batch
+
+One parameterized query executed many times with different args — the most efficient way to bulk-write.
+
+```yaml
+- define rows <list[<list[100|uuid1]>|<list[200|uuid2]>|<list[50|uuid3]>]>
+- db_execute_batch id:main "sql:UPDATE players SET score = ? WHERE uuid = ?" args:<[rows]> label:bulk_update
+```
+
+---
+
+## Data Import and Export
+
+### CSV Export
+
+```yaml
+- db_export_csv id:main sql:"SELECT * FROM players WHERE rank = ?" path:plugins/Datenizen/exports/gold.csv args:<list[gold]>
+
+on db csv exported:
+  - narrate "Saved to <context.path>"
+```
+
+Values containing commas, quotes, or newlines are automatically escaped per RFC 4180.
+
+### CSV Import
+
+```yaml
+- db_import_csv id:main table:players path:plugins/Datenizen/imports/backup.csv
+
+on db csv imported:
+  - narrate "Imported <context.rows> rows into <context.table>"
+```
+
+The first line is treated as the header and skipped. Missing columns in a row are inserted as `NULL`.
 
 ---
 
 ## Maintenance
 
-### Database Optimization
-Runs `VACUUM` on SQLite or `ANALYZE` on MySQL/PostgreSQL.
+### Backup (SQLite only)
 
 ```yaml
+- db_backup id:local path:plugins/Datenizen/backups/local_<util.date>.db
+
+on db backed up:
+  - narrate "Backup saved to <context.path>"
+```
+
+### Optimization
+
+```yaml
+# VACUUM on SQLite, ANALYZE on others
 - db_analyze id:main
+
+# Evict idle connections from pool
+- db_clean_pool id:main
+
+# Change max pool size at runtime (1–100)
+- db_set_pool_size id:main size:20
+
+# Change connection timeout (minimum 250ms)
+- db_timeout id:main ms:5000
 ```
 
-### Backup (SQLite Only)
-Copies the database file asynchronously to a new path.
+### Pool Statistics
 
 ```yaml
-- db_backup id:local path:plugins/Datenizen/backups/local_backup.db
-```
-
----
-
-## Error Handling
-
-The `db error` event fires whenever any SQL exception or validation error occurs. It now includes a SQL state code and a human-readable category to enable precise error handling.
-
-### Contexts
-
-| Context | Description |
-|---|---|
-| `<context.id>` | The database ID that produced the error |
-| `<context.error>` | Full error message from the JDBC driver |
-| `<context.query>` | The SQL query that caused the error, or the command name for validation errors |
-| `<context.sql_state>` | 5-character SQL state code (e.g. `23000`). Empty for non-SQL exceptions |
-| `<context.category>` | Human-readable category derived from the SQL state |
-
-### Error Categories
-
-| Category | SQL State Prefix | Meaning |
-|---|---|---|
-| `constraint` | `23xxx` | Unique/primary key violation, foreign key error |
-| `syntax` | `42xxx` | SQL syntax error or unknown object |
-| `connection` | `08xxx` or no state | Network error, pool timeout, driver failure |
-| `data` | `22xxx` | Data type mismatch, truncation, out of range |
-| `permission` | `28xxx`, `42501` | Access denied, insufficient privileges |
-| `timeout` | `HYT00`, `HYT01`, `40001` | Lock wait timeout, query timeout, deadlock |
-| `unknown` | anything else | Uncategorized SQL exception |
-
-### Switches
-
-```yaml
-# Filter by database id
-on db error id:main:
-
-# Filter by category
-on db error category:constraint:
-
-# Combine both
-on db error id:main category:connection:
-```
-
-### Usage Examples
-
-```yaml
-# Log everything
-on db error:
-  - announce to_console "[<context.id>] <context.category> (<context.sql_state>): <context.error>"
-
-# Handle constraint violations (e.g. duplicate player uuid)
-on db error id:main category:constraint:
-  - narrate "That record already exists."
-
-# Auto-reconnect on connection loss
-on db error category:connection:
-  - db_reconnect id:<context.id>
-
-# Rollback active transaction on any error
-on db error id:main:
-  - db_transaction id:main action:rollback tx:active_tx
-```
-
----
-
-## Connection Status Tags
-
-```yaml
-# Check if a connection pool is registered and open
-- if <db_connected[main]>:
-  - narrate "Pool is open."
-
-# Actively test the connection (more reliable - calls isValid(1) on a real connection)
-- if !<db_ping[main]>:
-  - db_reconnect id:main
-
-# List all currently active database IDs
-- narrate "Active connections: <db_list>"
-
-# Get pool statistics
 - define stats <db_info[main]>
 - narrate "Active: <[stats].get[active_connections]> / Total: <[stats].get[total_connections]>"
 ```
 
 ---
 
-## Full Tag Reference
+## Error Handling
 
-| Tag | Returns | Description |
+`on db error` fires for any SQL exception or validation error.
+
+### Contexts
+
+| Context | Description |
+|---|---|
+| `<context.id>` | Database ID that produced the error |
+| `<context.error>` | Full error message from the driver |
+| `<context.query>` | SQL query or command name for validation errors |
+| `<context.sql_state>` | 5-character SQL state code (e.g. `23000`). Empty for non-SQL exceptions |
+| `<context.category>` | Human-readable category derived from the SQL state |
+
+### Error Categories
+
+| Category | SQL State | Meaning |
 |---|---|---|
-| `<db_query[id].sql[query].args[list]>` | `ListTag` | All rows as a list of `MapTag` |
-| `<db_query_first[id].sql[query].args[list]>` | `MapTag` | First row as a `MapTag`, or null |
-| `<db_value[id].sql[query].args[list]>` | `ElementTag` | First column of first row |
-| `<db_exists[id].sql[query].args[list]>` | `ElementTag(Boolean)` | True if query returns at least one row |
-| `<db_query_as_json[id].sql[query].args[list]>` | `ElementTag` | Result as JSON array string |
-| `<db_convert_map[id].sql[query].args[list]>` | `MapTag` | First column → key, second column → value |
-| `<db_last_id[tx_id]>` | `ElementTag` | Last inserted row ID (requires transaction ID) |
-| `<db_exists_table[id].table[name]>` | `ElementTag(Boolean)` | True if table exists |
-| `<db_table_exists[id\|name]>` | `ElementTag(Boolean)` | Same as above, shorter syntax |
-| `<db_tables[id]>` | `ListTag` | All table names in the database |
-| `<db_columns[id].table[name]>` | `ListTag` | All column names for a table |
-| `<db_count[id].table[name]>` | `ElementTag` | Total row count for a table |
-| `<db_connected[id]>` | `ElementTag(Boolean)` | True if pool is registered and open |
-| `<db_ping[id]>` | `ElementTag(Boolean)` | True if connection is actively alive |
-| `<db_list>` | `ListTag` | All active database connection IDs |
-| `<db_info[id]>` | `MapTag` | Pool stats: active, idle, total, threads_awaiting |
+| `constraint` | `23xxx` | Unique/PK violation, foreign key error |
+| `syntax` | `42xxx` | SQL syntax error or unknown object |
+| `connection` | `08xxx` or no state | Network error, pool timeout, driver failure |
+| `data` | `22xxx` | Type mismatch, truncation, out of range |
+| `permission` | `28xxx`, `42501` | Access denied, insufficient privileges |
+| `timeout` | `HYT00`, `HYT01`, `40001` | Lock wait timeout, deadlock |
+| `unknown` | anything else | Uncategorized |
+
+### Switches
+
+```yaml
+on db error id:main:                     # specific database
+on db error category:constraint:         # specific category
+on db error id:main category:connection: # both
+```
+
+### Examples
+
+```yaml
+# Log everything
+on db error:
+  - announce to_console "[<context.id>] <context.category> (<context.sql_state>): <context.error>"
+
+# Handle duplicate records
+on db error id:main category:constraint:
+  - narrate "That record already exists."
+
+# Auto-reconnect on connection loss
+on db error category:connection:
+  - db_reconnect id:<context.id>
+```
 
 ---
 
@@ -425,24 +527,31 @@ on db error id:main:
 | Command | Description |
 |---|---|
 | `db_connect` | Connect to a database and register a connection pool |
-| `db_reconnect` | Reconnect using saved credentials from the last `db_connect` |
-| `db_disconnect` | Disconnect and release all pool resources |
-| `db_execute` | Run an async SQL write query (INSERT/UPDATE/DELETE) |
-| `db_execute_sync` | Run a synchronous SQL write query on main thread |
+| `db_connect_file` | Connect using credentials from a YAML file |
+| `db_reconnect` | Reconnect using saved credentials |
+| `db_disconnect` | Disconnect and release pool resources |
+| `db_register` | Register a named SQL query for later use with `db_run` |
+| `db_run` | Execute a named query; fires `db queried` or `db executed` |
+| `db_execute` | Run an async SQL write query |
+| `db_execute_sync` | Run a synchronous SQL write query on the main thread |
 | `db_execute_async_list` | Run multiple SQL statements sequentially in one async task |
 | `db_execute_batch` | Run one parameterized query many times via JDBC batching |
 | `db_execute_script` | Execute a `.sql` file inside a transaction |
-| `db_transaction` | Start, commit, or rollback a transaction |
+| `db_query_async` | Run a SELECT asynchronously; fires `db queried` with results |
+| `db_transaction` | Start, commit, rollback, or manage savepoints in a transaction |
+| `db_migrate` | Apply pending SQL migration files from a folder |
 | `db_table_create` | Create a table from a column definition list |
 | `db_table_insert` | Insert a row without writing SQL |
 | `db_table_update` | Update rows without writing SQL |
 | `db_table_delete` | Delete rows without writing SQL |
-| `db_upsert` | Insert or update a row in one command |
+| `db_table_copy` | Copy a table's schema and data to a new table |
+| `db_upsert` | Insert or update a single row |
+| `db_upsert_batch` | Insert or update many rows in one batched operation |
 | `db_drop_table` | Drop a table |
 | `db_backup` | Copy an SQLite database file asynchronously |
 | `db_import_csv` | Import a CSV file into a table |
 | `db_export_csv` | Export a query result to a CSV file |
-| `db_analyze` | Run VACUUM (SQLite) or ANALYZE (MySQL/PostgreSQL) |
+| `db_analyze` | Run VACUUM (SQLite) or ANALYZE (others) |
 | `db_clean_pool` | Evict idle connections from a pool |
 | `db_set_pool_size` | Change maximum pool size (1–100) |
 | `db_timeout` | Change connection timeout (minimum 250ms) |
@@ -451,51 +560,40 @@ on db error id:main:
 
 ## Full Event Reference
 
-| Event | Contexts | Description |
+| Event | Switches | Contexts | Description |
+|---|---|---|---|
+| `on db connected` | `id` | `id` | Connection pool initialized |
+| `on db disconnected` | — | `id` | Connection pool closed |
+| `on db executed` | `id`, `label` | `id`, `label`, `affected_rows` | Write operation completed |
+| `on db queried` | `id`, `label` | `id`, `label`, `rows` | `db_query_async` or `db_run` SELECT completed |
+| `on db error` | `id`, `category` | `id`, `error`, `query`, `sql_state`, `category` | SQL or validation error |
+| `on db migrated` | `id` | `id`, `count`, `path` | Migration run completed |
+| `on db backed up` | `id` | `id`, `path` | SQLite backup completed |
+| `on db csv exported` | — | `id`, `path` | CSV export completed |
+| `on db csv imported` | — | `id`, `table`, `rows` | CSV import completed |
+| `on db transaction expired` | — | `tx`, `id` | Transaction auto-rolled back after 5 minutes |
+| `on db connection leaked` | — | `tx`, `duration` | Transaction exceeded the 5-minute threshold |
+
+---
+
+## Full Tag Reference
+
+| Tag | Returns | Description |
 |---|---|---|
-| `on db connected` | `id` | Connection pool successfully initialized. Switch: `id` |
-| `on db disconnected` | `id` | Connection pool closed |
-| `on db executed` | `id`, `label`, `affected_rows` | Async write operation completed. Switches: `id`, `label` |
-| `on db error` | `id`, `error`, `query`, `sql_state`, `category` | SQL or validation error occurred. Switches: `id`, `category` |
-| `on db transaction expired` | `tx`, `id` | Transaction auto-rolled back after 5 minutes |
-| `on db connection leaked` | `tx`, `duration` | Transaction exceeded the 5-minute threshold |
-| `on db csv exported` | `id`, `path` | CSV export completed |
-| `on db csv imported` | `id`, `table`, `rows` | CSV import completed |
-
----
-
-## Retrieving Last Inserted ID
-
-To guarantee thread safety, `db_last_id` **must** be called with a transaction ID - this ensures it reads from the same connection the insert was made on.
-
-```yaml
-- db_transaction id:main action:start tx:insert_tx
-- db_execute id:main "sql:INSERT INTO logs (action) VALUES ('test')" tx:insert_tx
-- define new_id <db_last_id[insert_tx]>
-- db_transaction id:main action:commit tx:insert_tx
-- narrate "New log entry ID: <[new_id]>"
-```
-
----
-
-## Converting Results to Maps
-
-```yaml
-# Map of setting_name -> setting_value
-- define settings <db_convert_map[main].sql[SELECT setting_name, setting_value FROM config]>
-- narrate "Language: <[settings].get[language]>"
-```
-
----
-
-## Parameterized Queries
-
-All commands that accept SQL support `?` placeholders via the `args` list. This is the recommended approach - never interpolate player input directly into SQL strings.
-
-```yaml
-# With args list
-- db_execute id:main sql:"INSERT INTO players (name, uuid) VALUES (?, ?)" args:<list[<player.name>|<player.uuid>]>
-
-# The sql argument also accepts quoted form for complex queries
-- db_execute id:main "sql:UPDATE players SET coins = coins - ? WHERE uuid = ?" args:<list[<[amount]>|<player.uuid>]>
-```
+| `<db_query[id].sql[q].args[list]>` | `ListTag` | All rows as a list of `MapTag` |
+| `<db_query_first[id].sql[q].args[list]>` | `MapTag` | First row as a `MapTag`, or null |
+| `<db_query_page[id].sql[q].page[n].size[n].args[list]>` | `ListTag` | Paginated rows (LIMIT/OFFSET) |
+| `<db_cached_query[id].sql[q].ttl[ticks].args[list]>` | `ListTag` | Cached query result with TTL in ticks |
+| `<db_value[id].sql[q].args[list]>` | `ElementTag` | First column of first row |
+| `<db_exists[id].sql[q].args[list]>` | `ElementTag(Boolean)` | True if query returns at least one row |
+| `<db_query_as_json[id].sql[q].args[list]>` | `ElementTag` | Result as JSON array string |
+| `<db_convert_map[id].sql[q].args[list]>` | `MapTag` | Column 1 → key, column 2 → value |
+| `<db_last_id[tx_id]>` | `ElementTag` | Last inserted row ID (requires transaction ID) |
+| `<db_exists_table[id].table[name]>` | `ElementTag(Boolean)` | True if table exists |
+| `<db_tables[id]>` | `ListTag` | All table names in the database |
+| `<db_columns[id].table[name]>` | `ListTag` | All column names for a table |
+| `<db_count[id].table[name]>` | `ElementTag` | Total row count for a table |
+| `<db_connected[id]>` | `ElementTag(Boolean)` | True if pool is registered and open |
+| `<db_ping[id]>` | `ElementTag(Boolean)` | True if connection is actively alive |
+| `<db_list>` | `ListTag` | All active database connection IDs |
+| `<db_info[id]>` | `MapTag` | Pool stats: `active_connections`, `idle_connections`, `total_connections`, `threads_awaiting` |
