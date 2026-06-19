@@ -191,14 +191,6 @@ on db queried label:gold_players:
     - narrate "<[row].get[name]> is gold rank"
 ```
 
-When you need the result immediately in the same script, use `define` — the queue pauses until data arrives then continues:
-
-```yaml
-- db_query_async id:main sql:"SELECT * FROM players ORDER BY coins DESC" define:players
-- narrate "Top player: <[players].first.get[name]>"
-- narrate "Total loaded: <[players].size>"
-```
-
 ### Cached Query
 
 Avoid hitting the database repeatedly for the same data. Results are cached for the given TTL (in ticks) and invalidated automatically when the database disconnects.
